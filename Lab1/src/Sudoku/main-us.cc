@@ -42,6 +42,31 @@ int64_t now() {  // 计算现在的时间
   return tv.tv_sec * 1000000 + tv.tv_usec;
 }
 
+void* reader(void* arg) {
+  char* filename = (char*)arg;
+  FILE* fp = fopen(filename, "r");  // 读取文件
+
+  while (1) {
+    sem_wait(&queueEmpty);  // 等待信号量
+    pthread_mutex_lock(&readWriteLock);
+    char* end = fgets(puzzle[producerNum], sizeof puzzle, fp);
+    if (end == NULL) {
+      pthread_mutex_unlock(&readWriteLock);
+      break;
+    }
+    producerNum = (producerNum + 1) % BUFSIZE;
+    total++;
+    pthread_mutex_unlock(&readWriteLock);
+    sem_post(&queueFull);  // 发出信号量给消费者
+  }
+
+  pthread_mutex_lock(&fileLock);
+  currentFile = NULL;
+  pthread_mutex_unlock(&fileLock);
+
+  return 0;
+}
+
 int main(int argc, char* argv[]) {
   sem_init(&queueEmpty, 0, BUFSIZE);
   sem_init(&queueFull, 0, 0);
