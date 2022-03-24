@@ -67,6 +67,41 @@ void* reader(void* arg) {
   return 0;
 }
 
+void* solver(void* arg) {
+  int out[81];
+  int order;
+  while (!sysend || totalSolved < total) {  // 没有读取完或者没有解决完就继续
+    // 读数据
+    sem_wait(&queueFull);
+    if (sysend && totalSolved >= total) break;
+    pthread_mutex_lock(&readWriteLock);
+    // 读取出来数据
+    totalSolved++;
+    for (int i = 0; i < N; ++i) {
+      out[i] = puzzle[consumerNum][i] - '0';
+    }
+    order = consumerNum;  // 记录他的序号
+    consumerNum = (consumerNum + 1) % BUFSIZE;
+    pthread_mutex_unlock(&readWriteLock);
+    sem_post(&queueEmpty);
+
+    solve_sudoku_dancing_links(out);  // 求解
+
+    pthread_mutex_lock(&outputLock);  // 输出部分
+    // 等待轮到自己
+    while (outOrder != order) pthread_cond_wait(&outCond, &outputLock);
+    for (int i = 0; i < 81; ++i) printf("%d", out[i]);
+    printf("\n");
+    outOrder = (outOrder + 1) % BUFSIZE;
+    pthread_cond_broadcast(&outCond);
+    pthread_mutex_unlock(&outputLock);
+  }
+
+  // 唤醒其他线程
+  for (int i = 0; i < n; i++) sem_post(&queueFull);
+  return 0;
+}
+
 int main(int argc, char* argv[]) {
   sem_init(&queueEmpty, 0, BUFSIZE);
   sem_init(&queueFull, 0, 0);
