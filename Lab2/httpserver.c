@@ -124,3 +124,131 @@ void http_request(const char *request, int cfd) {
   }
 }
 
+void *http_hander(void *argc) {
+  int *p_confd = (int *)argc;
+  int confd = *p_confd;
+
+  // 将浏览器发过来的数据, 读到line中
+  char line[1024] = {0};
+  int data_len = 0;
+  // 读请求行
+  int len = get_line(confd, line, sizeof(line));
+  if (len == 0) {
+    goto end;
+  } else {
+    while (1) {
+      char buf[1024] = {0};
+      len = get_line(confd, buf, sizeof(buf));
+      if (strncasecmp("Content-Length", buf, 14) == 0) {
+        strcpy(buf, buf + 16);
+        data_len = atoi(buf);
+      }
+      if (buf[0] == '\n') {
+        break;
+      } else if (len == 0) {
+        break;
+      }
+    }
+  }
+
+  char method[12], path[1024], protocol[12];
+  sscanf(line, "%[^ ] %[^ ] %[^ ]", method, path, protocol);
+
+  // 判断请求方法
+  // get方法 以空行为结尾
+  if (strncasecmp("get", line, 3) == 0) {
+    http_request(line, confd);
+  }
+  // post方法 空行后面还有实体行
+  else if (strncasecmp("post", line, 4) ==
+           0) {  // 这里还要固定文件名 正则表达式拿下来
+                 // 实体行里面没有换行符号 读一次就行
+                 // 这里不用设置长度了 使用了定时器的话
+    int len = get_line(confd, line, data_len);
+    char name[50], id[50];
+    if (strcmp(path, "/Post_show") != 0 ||
+        !get_name_id(line, len, name, id)) {  // 路径不对 或者键值对不对
+      send_error(confd, 404, "Not Found", "Not Found");
+      goto end;
+    }
+    char dest[1024] = {'\0'};
+    strcat(dest, "Your Name: ");
+    strcat(dest, name);
+    strcat(dest, "\nID: ");
+    strcat(dest, id);
+    send_error(confd, 200, "OK", dest);
+  }
+  // 其他方法不管
+  else {
+    char dest[1024] = {'\0'};
+    strcat(dest, "Does not implement this method: ");
+    strcat(dest, method);
+    send_error(confd, 501, "Not Implemented", dest);
+  }
+
+// 关闭文件描述符和释放对应空间
+end:
+  close(confd);
+  free(p_confd);
+}
+
+int main(int argc, char *argv[]) {
+  int ip, port, n_thread;
+  if (argc != 7) {
+    printf("please check your input, example:\n");
+    printf("./httpserver --ip 127.0.0.1 --port 8888 --number-thread 8\n");
+    exit(1);
+  }
+  while (1) {
+    int option_index = 0;
+    static struct option long_options[] = {
+        {"ip", required_argument, 0, 0},
+        {"port", required_argument, 0, 0},
+        {"number-thread", required_argument, 0, 0}};
+    int c = getopt_long(argc, argv, "", long_options, &option_index);
+    if (c == -1) break;
+
+    switch (option_index) {
+      case 0:
+        ip = ip_int(optarg);
+        if (ip == __INT32_MAX__) exit(1);  // 非法地址
+        break;
+      case 1:
+        port = atoi(optarg);
+        break;
+      case 2:
+        n_thread = atoi(optarg);
+        break;
+      default:
+        printf("参数错误\n");
+        exit(1);
+    }
+  }
+
+  // 设置好监听套接字
+  struct sockaddr_in servaddr, cliaddr;
+  socklen_t cliaddr_len;
+  int listenfd = socket(AF_INET, SOCK_STREAM, 0);  //创建一个socket, 得到lfd
+  bzero(&servaddr, sizeof(servaddr));              //地址结构清零
+  servaddr.sin_family = AF_INET;
+  servaddr.sin_addr.s_addr = htonl(ip);  //指定本地IP
+  servaddr.sin_port = htons(port);       //指定端口号
+  int opt = 1;                           //设置端口重用
+  setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+  bind(listenfd, (struct sockaddr *)&servaddr, sizeof(servaddr));  //绑定
+  listen(listenfd, 1000);  //设置同一时刻链接服务器上限数
+
+  //初始化线程池
+  pool_init(n_thread);
+
+  while (1) {
+    cliaddr_len = sizeof(cliaddr);
+    int *connfd = malloc(sizeof(int));
+    // 阻塞监听客户端链接请求
+    *connfd = accept(listenfd, (struct sockaddr *)&cliaddr, &cliaddr_len);
+    // 加入线程池中
+    pool_add_worker(http_hander, (void *)connfd);
+  }
+
+  pool_destroy();
+}
